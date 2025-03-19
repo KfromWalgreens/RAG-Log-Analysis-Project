@@ -7,7 +7,7 @@ chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection = chroma_client.get_or_create_collection(name="network_logs2")
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-openai.api_key = "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"
+openai.api_key = "" #input api key here
 
 # Get Relevant Logs from ChromaDB
 def retrieve_relevant_logs(query_text, n_results=5):
