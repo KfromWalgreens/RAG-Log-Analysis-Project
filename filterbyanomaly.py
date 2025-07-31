@@ -2,13 +2,13 @@ import pandas as pd
 from io import StringIO
 import os
 
-# === Config ===
-CONN_LOG_PATH = "/Users/Keek Windows/zeek_analysis/jan102022/conn.log"
-ANOMALY_CSV_PATH = "/Users/Keek Windows/Downloads/20220110_anomalous_suspicious - 20220110_anomalous_suspicious.csv"
-OUTPUT_PATH = "/Users/Keek Windows/zeek_analysis/filtered_conn.log"
+# Config
+CONN_LOG_PATH = "/Users/Keek Windows/zeek_analysis/jan82022/conn.log"
+ANOMALY_CSV_PATH = "/Users/Keek Windows/Downloads/20220108_anomalous_suspicious - 20220108_anomalous_suspicious.csv"
+OUTPUT_PATH = "/Users/Keek Windows/zeek_analysis/filtered_conn108.log"
 CHUNK_SIZE = 100_000  # Tune based on available RAM
 
-# === Load anomaly rules from CSV ===
+# Load anomaly rules from CSV
 def load_anomaly_rules(path):
     df = pd.read_csv(path).fillna("None").astype(str)
     rules = []
@@ -21,7 +21,7 @@ def load_anomaly_rules(path):
         })
     return rules
 
-# === Check if connection row matches any anomaly rule ===
+# Check if connection row matches any anomaly rule
 def conn_matches_any_rule(row, rules):
     for rule in rules:
         if (
@@ -33,16 +33,16 @@ def conn_matches_any_rule(row, rules):
             return True
     return False
 
-# === Generator to stream cleaned conn.log lines ===
+# Generator to stream cleaned conn.log lines
 def stream_conn_log_lines(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
             if not line.startswith("#"):
                 yield line
 
-# === Process conn.log in chunks directly from the file stream ===
+# Process conn.log in chunks directly from the file stream
 def process_conn_log(conn_path, rules, output_path):
-    print("🔁 Processing in chunks...")
+    print("Processing in chunks...")
 
     # Read the first non-comment line with '#fields' to get header
     header = None
@@ -54,7 +54,7 @@ def process_conn_log(conn_path, rules, output_path):
     if not header:
         raise RuntimeError("No #fields header found in conn.log")
 
-    # Stream lines generator (excluding comment lines)
+    # Streamlines generator (excluding comment lines)
     line_gen = stream_conn_log_lines(conn_path)
 
     # Buffer to hold lines for chunk processing
@@ -95,7 +95,7 @@ def process_conn_log(conn_path, rules, output_path):
 
     print(f"Done. Filtered logs written to: {output_path}")
 
-# === Main ===
+
 def main():
     if not os.path.exists(CONN_LOG_PATH):
         print(f"Conn log not found: {CONN_LOG_PATH}")

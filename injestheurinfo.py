@@ -1,87 +1,79 @@
-#injest heuristic info into chroma
-
 import os
 import re
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
+from chromadb import PersistentClient
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
-#Initialize ChromaDB and Embeddings
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-heuristic_txt_store4 = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=embedding_model,
-    collection_name="heuristic_info_txt4"
-)
+# Function to extract and split the text into sections based on headers like 'Simple heuristic' or 'Anomaly taxonomy'
+def split_by_sections(text):
+    pattern = r"(?m)^\s*(Simple heuristic|Anomaly taxonomy)\s*\n+([\s\S]*?)(?=^\s*(?:Simple heuristic|Anomaly taxonomy)|\Z)"
+    matches = re.findall(pattern, text)
 
-#Ingestion Function
-def ingest_heuristics_and_taxonomy(file_path, chroma_collection):
-    with open(file_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    print(f"\nFound {len(matches)} sections:")
+    for m in matches:
+        print(f" - {m[0]}")
 
-    #Heuristic Entries
-    heuristic_section = content.split("Anomaly taxonomy")[0]
-    heuristic_entries = re.findall(r"\* (\d+):(.+)", heuristic_section)
+    # Store each section as a tuple of (section_name, section_content)
+    sections = []
+    for match in matches:
+        section_name = match[0].strip()
+        content = match[1].strip()
+        sections.append((section_name, content))
+    return sections
 
-    print(f"Ingesting {len(heuristic_entries)} heuristic entries...")
+# Optional helper to break long sections into smaller chunks of ~300 tokens
+def subchunk_text(text, max_tokens=300):
+    """Optional: Break long text into smaller chunks."""
+    lines = text.split("\n")
+    chunks = []
+    current = []
+    token_est = lambda s: len(s.split())  # rough token estimate
 
-    for code, label in heuristic_entries:
-        code_int = int(code)
-        if code_int < 500:
-            desc = "Suspicious traffic: abnormal TCP flags or well-known malware ports."
-        elif 500 <= code_int < 900:
-            desc = "Normal protocol traffic seen on well-known ports."
-        else:
-            desc = "Traffic anomaly observed on unknown or uncommon ports."
+    total = 0
+    for line in lines:
+        total += token_est(line)
+        current.append(line)
+        if total >= max_tokens:
+            chunks.append("\n".join(current).strip())
+            current = []
+            total = 0
+    if current:
+        chunks.append("\n".join(current).strip())
+    return chunks
 
-        doc_text = (
-            f"Heuristic ID: {code}\n"
-            f"Label: {label.strip()}\n"
-            f"Category: {desc}"
-        )
+# Ingest the extracted sections (and their chunks) into ChromaDB
+def ingest_sections_to_chroma(sections, collection):
+    for idx, (title, content) in enumerate(sections):
+        print(f"\n--- Section {idx+1}: {title} ---")
+        print(content[:500], "\n...")  # print preview
 
-        chroma_collection.add_texts(
-            [doc_text],
-            metadatas=[{"type": "heuristic", "id": code}]
-        )
+        chunks = subchunk_text(content)
+        for j, chunk in enumerate(chunks):
+            doc_id = f"{title.replace(' ', '_').lower()}_{idx}_{j}"  # create unique doc ID
+            metadata = {"section": title}
+            collection.upsert(
+                documents=[chunk],
+                metadatas=[metadata],
+                ids=[doc_id]
+            )
+            print(f"Ingested chunk {j} of section '{title}'.")
 
-    #Taxonomy Group Prefixes
-    taxonomy_groups = {
-        "Unknown": ["unk", "empty"],
-        "Other": ["ttl_error", "hostout", "netout", "icmp_error"],
-        "HTTP": ["alphflHTTP", "ptmpHTTP", "mptpHTTP", "ptmplaHTTP", "mptplaHTTP"],
-        "MultiPoints": ["ptmp", "mptp", "mptmp"],
-        "AlphaFlow": ["alphfl", "malphfl", "salphfl", "point_to_point", "heavy_hitter"],
-        "IPv6Tunneling": ["ipv4gretun", "ipv46tun"],
-        "PortScan": ["posca", "ptpposca"],
-        "NetworkScanICMP": ["ntscIC", "dntscIC"],
-        "NetworkScanUDP": ["ntscUDP", "ptpposcaUDP"],
-        "NetworkScanTCP": [
-            "ntscACK", "ntscSYN", "sntscSYN", "ntscTCP", "ntscnull", "ntscXmas", "ntscFIN", "dntscSYN"
-        ],
-        "DoS": ["DoS", "distributed_dos", "ptpDoS", "sptpDoS", "DDoS", "rflat"],
-    }
-
-    print(f"Ingesting {len(taxonomy_groups)} taxonomy group entries...")
-
-    for category, prefixes in taxonomy_groups.items():
-        doc_text = f"Category: {category}\nPrefixes: {', '.join(prefixes)}"
-        chroma_collection.add_texts(
-            [doc_text],
-            metadatas=[{"type": "taxonomy_group", "category": category, "prefixes": ", ".join(prefixes)}]
-        )
-
-    print("Ingestion complete.\n")
-
-    #Print all stored content
-    print("🔍 All stored documents in 'heuristic_info_txt4':\n")
-    results = chroma_collection.get()
-    for i, doc in enumerate(results["documents"]):
-        print(f"--- Document {i+1} ---")
-        print(doc)
-        print()
-
-
-#Run Script
 if __name__ == "__main__":
-    file_path = "C:/Users/Keek Windows/Downloads/csv info.txt"
-    ingest_heuristics_and_taxonomy(file_path, heuristic_txt_store4)
+    # Load the raw text from the heuristic/taxonomy text file
+    path_to_text_file = "C:/Users/Keek Windows/Downloads/csv info2.txt"
+    with open(path_to_text_file, "r", encoding="utf-8-sig") as f:
+        text = f.read()
+
+    # Split text into named sections
+    sections = split_by_sections(text)
+
+    # Set up ChromaDB persistent client and embedding model
+    embedding_model = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+    chroma_client = PersistentClient(path="./chroma_db")
+    collection = chroma_client.get_or_create_collection(
+        name="heuristic_info_txt5",
+        embedding_function=embedding_model
+    )
+
+    # Ingest sections and their chunks into the vector database
+    ingest_sections_to_chroma(sections, collection)
+    print(f"\nFinished ingesting {len(sections)} main sections.")
