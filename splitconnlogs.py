@@ -1,3 +1,6 @@
+# Takes a Zeek conn.log file, separates its header and connection data, and splits the data
+# into multiple numbered log files of a specified size, each retaining the original headers
+
 import os
 
 # Function to split a Zeek conn.log file into smaller files with a fixed number of data records each

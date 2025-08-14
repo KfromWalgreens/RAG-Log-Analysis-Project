@@ -1,3 +1,7 @@
+# Does Retrieval-Augmented Generation analysis on Zeek conn.log files to detect and explain
+# ICMP ping flood attacks by extracting relevant IPs, matching them with stored anomaly
+# and heuristic data in Chroma vector databases, and generating a structured security assessment
+
 import os
 import re
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -24,7 +28,8 @@ ping_flood_store = Chroma(
 anomaly_csv_store = Chroma(
     persist_directory="./chroma_db",
     embedding_function=embedding_model,
-    collection_name="anomaly_csv_logs4"
+    # collection_name="anomaly_csv_logs8"
+    collection_name="anomaly_csv_logsc01"
 )
 
 heuristic_txt_store = Chroma(
@@ -44,8 +49,12 @@ You are given:
 - `anomaly_csv`: Structured anomaly records related to suspicious IPs or ports.
 - `heuristic_context`: Documentation on heuristics and taxonomies used in labeling anomalies.
 
+You know that: 
+- If the ICMP type is not 8, it is not a ping flood.
+- At least 10 instances of ICMP type 8 should be present, unless known anomalous src or dst IPs that match heuristic 20 are present in the instance.
+
 Your tasks:
-1. Analyze the Zeek conn.log snippet and determine **if a ping flood attack is occurring**.
+1. Analyze the Zeek conn.log snippet and determine **if a ping flood attack is occurring**. Format as: "Based on the current log, a ping flooding attack [is/ is not] happening."
 2. If a ping flood is detected:
    Respond in this format:
    - Explain how the traffic matches known ping flood patterns.
@@ -59,8 +68,7 @@ Your tasks:
     - State specifically what the heuristic and taxonomy stand for.
     - If something should be investigated further, be specific on next steps.
 
-Be confident and avoid vague language. Support your conclusions with the provided data.
-
+Be confident and avoid vague language. Support your conclusions with the provided data. Do not include a summary at the end, keep answers concise.
 -----------------
 Zeek conn.log snippet:
 {conn_log_snippet}
@@ -163,7 +171,7 @@ def generate_rag_analysis(conn_log_text):
     }
 
     prompt = ping_flood_prompt.format(**context)
-    llm = ChatOpenAI(model_name="gpt-4", temperature=0)
+    llm = ChatOpenAI(model_name="gpt-4.1-mini", temperature=0)
     response = llm.invoke([{"role": "user", "content": prompt}])
     return response.content
 
@@ -213,7 +221,11 @@ def run_folder_analysis(input_folder, output_folder):
 
 # Set input and output folders for batch processing
 if __name__ == "__main__":
-    input_folder = "C:/Users/Keek Windows/PyCharmMiscProject/c101split/test2"  # Folder with conn.log files
-    output_folder = "C:/Users/Keek Windows/PyCharmMiscProject/rag_outputs_c101split"  # Where to save .txts
+    # input_folder = "C:/Users/Keek Windows/PyCharmMiscProject/c101split/test3" # Folder with conn.log files
+    # output_folder = "C:/Users/Keek Windows/PyCharmMiscProject/rag_outputs_c101split3withanom" # Where to save .txts
+    # input_folder = "C:/Users/Keek Windows/PyCharmMiscProject/fc110split"  # Folder with conn.log files
+    # output_folder = "C:/Users/Keek Windows/PyCharmMiscProject/rag_outputs_fc110split" # Where to save .txts
+    input_folder = "C:/Users/Keek Windows/PyCharmMiscProject/inragsplit/test1"  # Folder with conn.log files
+    output_folder = "C:/Users/Keek Windows/PyCharmMiscProject/rag_outputs_inragsplit2/test1" # Where to save .txts
 
     run_folder_analysis(input_folder, output_folder)

@@ -1,3 +1,6 @@
+# Processes a large Zeek conn.log file in memory-efficient chunks, filtering for connections
+# matching IP/port patterns from an anomaly CSV, and writes only the matching rows to a new filtered log file
+
 import pandas as pd
 from io import StringIO
 import os

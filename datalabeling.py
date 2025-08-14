@@ -1,69 +1,62 @@
+# Scans Zeek conn.log files for ICMP ping flood attacks using sliding-window detection and
+# anomaly IP lists from heuristic-20 CSVs, labels each log with detection results,
+# and saves them to a JSON report
+
 import os
 import json
-import csv
+import pandas as pd
 from collections import defaultdict
 from datetime import datetime
 
-# Load IPs from the anomaly CSV that are linked to heuristic "20"
-def load_anomalous_ips(csv_path):
-    ip_set = set()
-    with open(csv_path, "r") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row.get("heuristic") != "20":
-                continue
-            if row["srcIP"] and row["srcIP"].lower() != "none":
-                ip_set.add(row["srcIP"])
-            if row["dstIP"] and row["dstIP"].lower() != "none":
-                ip_set.add(row["dstIP"])
-    return ip_set
-
-# Parse Zeek conn.log file into a list of relevant connection entries
+# Parse Zeek conn.log file
 def parse_zeek_conn_log(file_path):
     entries = []
     with open(file_path, "r") as f:
         for line in f:
-            if line.startswith("#") or not line.strip():  # Skip headers and empty lines
+            if line.startswith("#") or not line.strip():
                 continue
             fields = line.strip().split('\t')
             if len(fields) < 22:
                 continue
             entry = {
-                "ts": float(fields[0]),      # timestamp
-                "src_ip": fields[2],         # source IP
-                "dst_ip": fields[4],         # destination IP
-                "dst_port": fields[5],       # destination port
-                "proto": fields[6],          # protocol (e.g., TCP, ICMP)
+                "ts": float(fields[0]),
+                "src_ip": fields[2],
+                "src_port": fields[3],
+                "dst_ip": fields[4],
+                "dst_port": fields[5],
+                "proto": fields[6],
             }
             entries.append(entry)
     return entries
-
-# Convert UNIX timestamp to human-readable format
+# Convert UNIX timestamp to human-readable datetime string
 def to_readable(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-# Detect ICMP ping flood patterns in conn.log entries
-def detect_ping_flood(entries, threshold=5, time_window=5):
-    # Filter for ICMP echo requests (type 8)
-    icmp_echoes = [e for e in entries if e['proto'] == 'icmp' and e['dst_port'] == '8']
+# Detect ping flood attacks (many-to-one or one-to-many) in a list of conn.log entries
+def detect_ping_flood(entries, threshold=10, time_window=20):
+    # Filter only ICMP echo request/reply pairs
+    icmp_echoes = [
+        e for e in entries if e['proto'] == 'icmp' and (
+            (e['src_port'] == '8' and e['dst_port'] == '0') or
+            (e['src_port'] == '0' and e['dst_port'] == '8')
+        )
+    ]
+    # Sort by timestamp for time window analysis
     icmp_echoes.sort(key=lambda x: x['ts'])
 
-    floods = {
-        "many_to_one": [],  # many different src_ips to one dst_ip
-        "one_to_many": []   # one src_ip to many different dst_ips
-    }
-
+    floods = {"many_to_one": [], "one_to_many": []}
     # Detect many-to-one pattern
+    # Group packets by destination IP
     dst_groups = defaultdict(list)
     for e in icmp_echoes:
         dst_groups[e['dst_ip']].append(e)
-
+    # For each group, use sliding window to detect flood based on threshold
     for dst_ip, packets in dst_groups.items():
         start_idx = 0
         for end_idx in range(len(packets)):
             while packets[end_idx]['ts'] - packets[start_idx]['ts'] > time_window:
                 start_idx += 1
-            window = packets[start_idx:end_idx+1]
+            window = packets[start_idx:end_idx + 1]
             src_ips = set(p['src_ip'] for p in window)
             if len(window) >= threshold and len(src_ips) >= 3:
                 floods["many_to_one"].append({
@@ -75,19 +68,19 @@ def detect_ping_flood(entries, threshold=5, time_window=5):
                     "start_time": to_readable(window[0]['ts']),
                     "end_time": to_readable(window[-1]['ts'])
                 })
-                break  # Stop after first match for this IP
-
+                break
     # Detect one-to-many pattern
+    # Group packets by source IP
     src_groups = defaultdict(list)
     for e in icmp_echoes:
         src_groups[e['src_ip']].append(e)
-
+    # Use sliding window to detect bursts from a single source to multiple destinations
     for src_ip, packets in src_groups.items():
         start_idx = 0
         for end_idx in range(len(packets)):
             while packets[end_idx]['ts'] - packets[start_idx]['ts'] > time_window:
                 start_idx += 1
-            window = packets[start_idx:end_idx+1]
+            window = packets[start_idx:end_idx + 1]
             dst_ips = set(p['dst_ip'] for p in window)
             if len(window) >= threshold and len(dst_ips) >= 3:
                 floods["one_to_many"].append({
@@ -99,14 +92,32 @@ def detect_ping_flood(entries, threshold=5, time_window=5):
                     "start_time": to_readable(window[0]['ts']),
                     "end_time": to_readable(window[-1]['ts'])
                 })
-                break  # Stop after first match for this IP
+                break
 
     return floods
+# Load all source/destination IPs from anomaly CSV files where heuristic = 20
+def load_anomaly_heuristic20_ips(csv_paths):
+    all_ips = set()
+    for csv_path in csv_paths:
+        try:
+            df = pd.read_csv(csv_path)
+            if 'heuristic' in df.columns:
+                h20 = df[df['heuristic'] == 20]
+                if 'srcIP' in df.columns and 'dstIP' in df.columns:
+                    all_ips.update(h20['srcIP'].dropna().astype(str).tolist())
+                    all_ips.update(h20['dstIP'].dropna().astype(str).tolist())
+                elif 'ip' in df.columns:
+                    all_ips.update(h20['ip'].dropna().astype(str).tolist())
+        except Exception as e:
+            print(f"Error loading {csv_path}: {e}")
+    return all_ips
 
-# Main labeling function that processes all log files in a directory
-def label_logs_in_directory(input_folder, anomaly_csv=None, output_file="ping_flood_labels.json", threshold=5, time_window=5):
-    anomaly_ips = load_anomalous_ips(anomaly_csv) if anomaly_csv else set()
+def label_logs_in_directory(input_folder, anomaly_csvs, output_file="ping_flood_labels.json", threshold=10, time_window=20):
     results = {}
+    yes_count = 0
+    no_count = 0
+    # Load all relevant IPs from anomaly CSVs
+    anomaly_ips = load_anomaly_heuristic20_ips(anomaly_csvs)
 
     for fname in os.listdir(input_folder):
         if not fname.endswith(".log"):
@@ -115,55 +126,65 @@ def label_logs_in_directory(input_folder, anomaly_csv=None, output_file="ping_fl
         try:
             entries = parse_zeek_conn_log(fpath)
             floods = detect_ping_flood(entries, threshold=threshold, time_window=time_window)
+            # Check if any echo requests involve IPs found in heuristic 20 anomalies
+            matching_rows = [
+                e for e in entries
+                if ((e['src_port'] == '8' and e['dst_port'] == '0') or (e['src_port'] == '0' and e['dst_port'] == '8'))
+                and (e['src_ip'] in anomaly_ips or e['dst_ip'] in anomaly_ips)
+            ]
 
-            matched_ips = set()
-            for entry in entries:
-                if entry["proto"] != "icmp":
-                    continue
-                if entry["src_ip"] in anomaly_ips:
-                    matched_ips.add(entry["src_ip"])
-                if entry["dst_ip"] in anomaly_ips:
-                    matched_ips.add(entry["dst_ip"])
-            ip_match = bool(matched_ips)
-
+            # Detection logic; start with assumption that no attack is detected
+            detected = False
             reason = []
+
+            if len(matching_rows) >= 5:
+                detected = True
+                reason.append(f"≥1 rows have both ICMP echo and heuristic 20 IP ({len(matching_rows)} match)")
+
             if floods["many_to_one"]:
-                reason.append("many-to-one pattern")
+                detected = True
+                reason.append(f"many-to-one ICMP ping flood detected ({len(floods['many_to_one'])} events)")
+
             if floods["one_to_many"]:
-                reason.append("one-to-many pattern")
-            if ip_match:
-                reason.append("anomalous IP with heuristic 20")
+                detected = True
+                reason.append(f"one-to-many ICMP ping flood detected ({len(floods['one_to_many'])} events)")
 
-            detected = bool(reason)
-
-            # Save results for this file
             results[fname] = {
                 "ping_flood_detected": detected,
                 "num_floods": len(floods["many_to_one"]) + len(floods["one_to_many"]),
                 "flood_details": floods,
-                "anomaly_ip_match": ip_match,
-                "detection_reason": reason,
-                "flagged_ips": list(matched_ips)
+                "matching_anomaly_rows": len(matching_rows),
+                "detection_reason": reason
             }
-
-            # Print summary to console
+            # Print result to console
             if detected:
-                flagged_str = ", ".join(matched_ips) if matched_ips else "None"
-                print(f"Processed {fname} - Ping Flood: YES ({', '.join(reason)}) - Flagged IPs: {flagged_str}")
+                yes_count += 1
+                print(f"Processed {fname} - Ping Flood: YES ({', '.join(reason)})")
             else:
+                no_count += 1
                 print(f"Processed {fname} - Ping Flood: NO")
+
         except Exception as e:
             print(f"Error processing {fname}: {e}")
             results[fname] = {"error": str(e)}
-
-    # Save all detection results to JSON
+    # Print result to JSON file
     output_path = os.path.join(input_folder, output_file)
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nSaved labels to {output_path}")
 
-# Run the script on a specified folder and anomaly file
+    print(f"\nTotal YES: {yes_count}")
+    print(f"Total NO: {no_count}")
+    print(f"Saved labels to {output_path}")
+
+# Run the script
 if __name__ == "__main__":
-    log_folder = "C:/Users/Keek Windows/PyCharmMiscProject/fc110split"
-    anomaly_csv_path = "C:/Users/Keek Windows/Downloads/20220110_anomalous_suspicious - 20220110_anomalous_suspicious1.csv"
-    label_logs_in_directory(log_folder, anomaly_csv=anomaly_csv_path)
+    log_folder = "C:/Users/Keek Windows/PyCharmMiscProject/inragsplit/test1"
+    # log_folder = "C:/Users/Keek Windows/PyCharmMiscProject/c101split/test1"
+    anomaly_csvs = [
+        "C:/Users/Keek Windows/Downloads/20220110_anomalous_suspicious - 20220110_anomalous_suspicious1.csv",
+        "C:/Users/Keek Windows/Downloads/20220109_anomalous_suspicious - 20220109_anomalous_suspicious.csv",
+        "C:/Users/Keek Windows/Downloads/20220102_anomalous_suspicious - 20220102_anomalous_suspicious.csv"
+        # "C:/Users/Keek Windows/Downloads/20220101_anomalous_suspicious - 20220101_anomalous_suspicious.csv"
+    ]
+
+    label_logs_in_directory(log_folder, anomaly_csvs)

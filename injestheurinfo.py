@@ -1,3 +1,7 @@
+# Parses a heuristic/taxonomy text file into distinct “Simple heuristic” and “Anomaly taxonomy” sections,
+# splits long sections into smaller chunks, and ingests them into a ChromaDB collection
+# with sentence-transformer embeddings for later semantic search and retrieval
+
 import os
 import re
 from chromadb import PersistentClient
